@@ -2,30 +2,40 @@
 #include <fstream>
 #include <vector>
 #include <cstring>
+#include <deque>
 
 #define MAX_FRAMES 128
 #define MAX_VPAGES 64
 
 using namespace std;
 
-typedef struct {
+typedef struct frame_t {
+    frame_t() : is_assigned(), pid(), vpage(), frame_id() {}
 
+    bool is_assigned;
+    int pid;
+    int vpage;
+    int frame_id;
 } frame_t;
 
 typedef struct {
-    unsigned int is_assigned_to_vma: 1;     // is the v_page a part of one of the VMAs
-    unsigned int is_valid: 1;               // is the v_page a valid/present page
-    unsigned int is_referenced: 1;          // is the v_page referenced
-    unsigned int is_modified: 1;            // is the v_page modified/written
-    unsigned int is_write_protected: 1;     // is the corresponding VMA write protected
-    unsigned int is_paged_out: 1;           // is the corresponding VMA mapped to a file
+    unsigned int is_present: 1;         // is the v_page a valid/present page
+    unsigned int is_referenced: 1;      // is the v_page referenced
+    unsigned int is_modified: 1;        // is the v_page modified/written
+    unsigned int is_write_protected: 1; // is the corresponding VMA write protected
+    unsigned int is_paged_out: 1;       // is the v_page paged_out
+
+    unsigned int is_assigned_to_vma: 1; // is the v_page a part of one of the VMAs
+    unsigned int is_file_mapped: 1;     // is the corresponding VMA mapped to a file
+
+    unsigned int frame_num: 7; // frame_num can be at max 128 = 2^7 => 7 bits
 } pte_t;
 
 typedef struct {
-    unsigned int start_page: 6;             // max value is 2^6 = 64 (max no. of vpages)
-    unsigned int end_page: 6;               // max value is 2^6 = 64 (max no. of vpages)
-    unsigned int is_write_protected: 1;     // is VMA write protected
-    unsigned int is_file_mapped: 1;         // is VMA file mapped
+    unsigned int start_page: 6;         // max value is 2^6 = 64 (max no. of vpages)
+    unsigned int end_page: 6;           // max value is 2^6 = 64 (max no. of vpages)
+    unsigned int is_write_protected: 1; // is VMA write protected
+    unsigned int is_file_mapped: 1;     // is VMA file mapped
 } vma_t;
 
 typedef struct {
@@ -44,8 +54,8 @@ public:
     pte_t page_table[MAX_VPAGES]{0};
 
     Process() {
-        pid = process_count;
-        process_count++;
+        pid = Process::process_count;
+        Process::process_count++;
         num_vmas = 0;
     }
 
@@ -53,7 +63,8 @@ public:
         return pid;
     }
 };
-int Process::process_count = 0; //initializing the static int - process_count
+
+int Process::process_count = 0; // initializing the static int - process_count
 
 class Pager {
 public:
@@ -72,19 +83,22 @@ public:
 /**
  * Global variables
  */
-frame_t frame_table[MAX_FRAMES];
-pte_t page_table[MAX_VPAGES];
+frame_t FRAME_TABLE[MAX_FRAMES]; // global frame table to keep track of all the frames in the physical memory
+pte_t PAGE_TABLE[MAX_VPAGES];    // page table of the current process
+int RAND_COUNT = 0;              // total number of random numbers in file
+vector<int> RANDVALS;            // initialize a list of random numbers
+int OFS = 0;                     // line offset for the random file
+int NUM_FRAMES = 0;              // total number of frames in the frame_table
+int NUM_PROCS = 0;               // total number of processes
+Pager *PAGER = nullptr;          // pager instance used in the simulation
+vector<Process *> PROCS;         // initialize a list of processes
+Process *CURR_PROC = nullptr;    // pointer to the current running process
+deque<ins_t> INSTRUCTIONS;       // list of instructions
+int INS_COUNTER = 0;             // instruction counter
 
-int RAND_COUNT = 0;             // total number of random numbers in file
-vector<int> RANDVALS;           // initialize a list of random numbers
-int OFS = 0;                    // line offset for the random file
-int NUM_FRAMES = 0;             // total number of frames in the frame_table
-int NUM_PROCS = 0;              // total number of processes
-Pager *PAGER = nullptr;         // pager instance used in the simulation
-vector<Process *> PROCS;        // initialize a list of processes
-Process *CURR_PROC = nullptr;   // pointer to the current running process
-vector<ins_t> INSTRUCTIONS;     // list of instructions
-
+/**
+ * List of option flags
+ */
 bool VERBOSE = false;
 bool SHOW_PAGE_TABLE = false;
 bool SHOW_FRAME_TABLE = false;
@@ -98,6 +112,10 @@ bool SHOW_AGING_INFO = false;
  * Helper functions
  */
 
+/**
+ * Get a frame from the frame table
+ * @return
+ */
 frame_t *get_frame() {
     return new frame_t();
 }
@@ -136,7 +154,7 @@ Pager *getPager(char *args) {
         case 'w':
             return new FCFSPager();
         default:
-            printf("Unknown Replacement Algorithm: %c", args[0]);
+            printf("Unknown Replacement Algorithm: %c\n", args[0]);
             exit(1);
     }
 }
@@ -286,7 +304,7 @@ void load_input(const char *filename) {
         auto *process = new Process();
         process->num_vmas = atoi(line.c_str());
 
-        for(int j = 0; j < process->num_vmas; j++) {
+        for (int j = 0; j < process->num_vmas; j++) {
             getline(input_file, line);
             while (line[0] == '#')
                 getline(input_file, line);
@@ -311,8 +329,9 @@ void load_input(const char *filename) {
     /**
      * Load Instructions
      */
-    while(getline(input_file, line)) {
-        if(line[0] == '#') continue;
+    while (getline(input_file, line)) {
+        if (line[0] == '#')
+            continue;
 
         char *buffer = new char[line.length() + 1];
         strcpy(buffer, line.c_str());
@@ -326,22 +345,186 @@ void load_input(const char *filename) {
 }
 
 /**
- * Debug function to print tokens/output
+ * Fetch the next instruction
+ *
+ * @param opcode - any one of 'c', 'r', 'w', 'e'
+ * @param target - virtual page number or process number
+ *
+ * @return boolean - true if next instruction is present, false if not
  */
-[[maybe_unused]] void print_output() {
+bool get_next_instruction(char &opcode, int &target) {
+    if (INSTRUCTIONS.empty())
+        return false;
+    ins_t instruction = INSTRUCTIONS.front();
+    opcode = instruction.op;
+    target = instruction.addr;
+    INSTRUCTIONS.pop_front();
+    return true;
+}
+
+
+/**
+ * Handle context switch operation
+ * @param target - process number
+ */
+void handle_context_switch(int target) {
+    CURR_PROC = PROCS[target];
+
+    // TODO: calculate context switch time
+}
+
+/**
+ * Checks if the vpage is valid (present in one of the VMAs)
+ * Caches the corresponding VMA values to the page table entry
+ *
+ * @param vpage - virtual page number
+ * @return boolean - true if it is valid, false if not
+ */
+bool check_validity_and_cache_details(int vpage) {
+    pte_t *pte = &(CURR_PROC->page_table[vpage]);
+    if (pte->is_assigned_to_vma) return true;
+
+    for(int i = 0; i < CURR_PROC->num_vmas; i++) {
+        vma_t vma = CURR_PROC->vma_list[i];
+        if (vpage >= vma.start_page && vpage <= vma.end_page) {
+            pte->is_assigned_to_vma = true;
+            pte->is_write_protected = vma.is_write_protected;
+            pte->is_file_mapped = vma.is_file_mapped;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Handle Load/Store Operations
+ * @param op
+ * @param vpage
+ */
+void handle_load_store(char op, int vpage) {
+    pte_t *pte = &(CURR_PROC->page_table[vpage]);
+    if(!pte->is_present) {
+        // TODO: make it valid/present
+        bool is_valid = check_validity_and_cache_details(vpage);
+        if(!is_valid) {
+            if(VERBOSE) printf(" SEGV\n");
+
+            // TODO: handle segv calculations
+
+            return;
+        }
+
+        frame_t *new_frame = get_frame();
+
+        // TODO: handle old frame
+        pte->frame_num = new_frame->frame_id;
+    }
+
+    //
+
+    pte->is_referenced = 1;
+    // TODO: make reference calculations
+
+    if(op == 'w') {
+        if (pte->is_write_protected){
+            if(VERBOSE) printf(" SEGPROT\n");
+
+            // TODO: make segprot calculations
+        } else {
+            pte->is_modified = 1;
+        }
+    }
+}
+
+/**
+ * Start simulation
+ */
+void run_simulation() {
+    char op = 0;
+    int target = 0;
+    while (get_next_instruction(op, target)) {
+        if(VERBOSE) {
+            printf("%d: ==> %c %d\n", INS_COUNTER, op, target);
+        }
+        INS_COUNTER++;
+        switch (op) {
+            case 'c':
+                handle_context_switch(target);
+                break;
+            case 'r':
+            case 'w':
+                handle_load_store(op, target);
+                break;
+            case 'e':
+                continue;
+            default:
+                printf("Incorrect instruction operation <%c>\n", op);
+                exit(1);
+        }
+    }
+}
+
+/**
+ * Debug function to pretty print the input tokens
+ */
+[[maybe_unused]] void print_input() {
     printf("NUM_FRAMES = %d\n", NUM_FRAMES);
     printf("NUM_PROCESSES = %d\n", NUM_PROCS);
-    for(Process *p : PROCS) {
+    for (Process *p: PROCS) {
         printf("PROCESS %d\n", p->get_pid());
         printf("\tNUM VMAS = %d\n", p->num_vmas);
-        for(vma_t vma : p->vma_list) {
-            printf("\t\t %d : %d : %d : %d\n", vma.start_page, vma.end_page, vma.is_write_protected, vma.is_file_mapped);
+        for (vma_t vma: p->vma_list) {
+            printf("\t\t %d : %d : %d : %d\n", vma.start_page, vma.end_page, vma.is_write_protected,
+                   vma.is_file_mapped);
         }
     }
     printf("INSTRUCTIONS\n");
-    for(ins_t ins : INSTRUCTIONS) {
+    for (ins_t ins: INSTRUCTIONS) {
         printf("\t%c : %d\n", ins.op, ins.addr);
     }
+}
+
+/**
+ * Print the page table for each process after executing all the instructions
+ */
+void print_page_tables() {
+    for (Process *p: PROCS) {
+        printf("PT[%d]: ", p->get_pid());
+        for (int i = 0; i < MAX_VPAGES; i++) {
+            pte_t entry = p->page_table[i];
+            if (entry.is_present) {
+                entry.is_referenced ? printf("R") : printf("-");
+                entry.is_modified ? printf("M") : printf("-");
+                entry.is_paged_out ? printf("S ") : printf("- ");
+            } else {
+                entry.is_paged_out ? printf("# ") : printf("* ");
+            }
+        }
+        printf("\n");
+    }
+}
+
+/**
+ * Print the final value of the frame table after
+ */
+void print_frame_table() {
+    printf("FT: ");
+    for (int i = 0; i < NUM_FRAMES; i++) {
+        frame_t *frame = &FRAME_TABLE[i];
+        frame->is_assigned ? printf("%d:%d ", frame->pid, frame->vpage) : printf("* ");
+    }
+    printf("\n");
+}
+
+/**
+ * Print the final desired output based on global flags
+ */
+void print_output() {
+    if (SHOW_PAGE_TABLE)
+        print_page_tables();
+    if (SHOW_FRAME_TABLE)
+        print_frame_table();
 }
 
 void garbage_collection() {
@@ -357,5 +540,7 @@ int main(int argc, char **argv) {
         parse_randoms(argv[optind + 1]);
     }
     load_input(argv[optind]);
+    run_simulation();
+    print_output();
     garbage_collection();
 }

@@ -10,12 +10,13 @@
 using namespace std;
 
 typedef struct frame_t {
-    frame_t() : is_assigned(), pid(), vpage(), frame_id() {}
+    frame_t() : is_assigned(false), pid(-1), vpage(-1), frame_id(-1), is_victim(false) {}
 
     bool is_assigned;
     int pid;
     int vpage;
     int frame_id;
+    bool is_victim;
 } frame_t;
 
 typedef struct {
@@ -42,6 +43,15 @@ typedef struct {
     char op;  // opcode
     int addr; // address
 } ins_t;
+
+/**
+ * Global variables part 1
+ */
+frame_t FRAME_TABLE[MAX_FRAMES]; // global frame table to keep track of all the frames in the physical memory
+pte_t PAGE_TABLE[MAX_VPAGES];    // page table of the current process
+deque<frame_t *> FREE_FRAMES;     // list of free frames
+int NUM_FRAMES = 0;              // total number of frames in the frame_table
+int NUM_PROCS = 0;               // total number of processes
 
 class Process {
 private:
@@ -74,22 +84,26 @@ public:
 };
 
 class FCFSPager : public Pager {
+private:
+    int curr_idx;
 public:
+    FCFSPager() {
+        curr_idx = 0;
+    }
+
     frame_t *select_victim_frame() override {
-        return new frame_t();
+        frame_t *victim = &FRAME_TABLE[curr_idx];
+        curr_idx = (curr_idx + 1) % NUM_FRAMES;
+        return victim;
     }
 };
 
 /**
- * Global variables
+ * Global variables part 2
  */
-frame_t FRAME_TABLE[MAX_FRAMES]; // global frame table to keep track of all the frames in the physical memory
-pte_t PAGE_TABLE[MAX_VPAGES];    // page table of the current process
 int RAND_COUNT = 0;              // total number of random numbers in file
 vector<int> RANDVALS;            // initialize a list of random numbers
 int OFS = 0;                     // line offset for the random file
-int NUM_FRAMES = 0;              // total number of frames in the frame_table
-int NUM_PROCS = 0;               // total number of processes
 Pager *PAGER = nullptr;          // pager instance used in the simulation
 vector<Process *> PROCS;         // initialize a list of processes
 Process *CURR_PROC = nullptr;    // pointer to the current running process
@@ -112,12 +126,39 @@ bool SHOW_AGING_INFO = false;
  * Helper functions
  */
 
+
 /**
- * Get a frame from the frame table
+ * Initialize frames for the FRAME_TABLE
+ */
+void initialize_frames() {
+    for (int i = 0; i < NUM_FRAMES; i++) {
+        frame_t *frame = &FRAME_TABLE[i];
+        frame->frame_id = i;
+
+        FREE_FRAMES.push_back(frame);
+    }
+}
+
+/**
+ * Allocate frame from free list
  * @return
  */
+frame_t *allocate_frame_from_free_list() {
+    if (FREE_FRAMES.empty()) return nullptr;
+    frame_t *free_frame = FREE_FRAMES.front();
+    FREE_FRAMES.pop_front();
+    return free_frame;
+}
+
+/**
+ * Get a frame from the frame table
+ * @return frame to be associated with the virtual page
+ */
 frame_t *get_frame() {
-    return new frame_t();
+    frame_t *frame = allocate_frame_from_free_list();
+    if (frame == nullptr)
+        frame = PAGER->select_victim_frame();
+    return frame;
 }
 
 /**
@@ -362,7 +403,6 @@ bool get_next_instruction(char &opcode, int &target) {
     return true;
 }
 
-
 /**
  * Handle context switch operation
  * @param target - process number
@@ -382,9 +422,10 @@ void handle_context_switch(int target) {
  */
 bool check_validity_and_cache_details(int vpage) {
     pte_t *pte = &(CURR_PROC->page_table[vpage]);
-    if (pte->is_assigned_to_vma) return true;
+    if (pte->is_assigned_to_vma)
+        return true;
 
-    for(int i = 0; i < CURR_PROC->num_vmas; i++) {
+    for (int i = 0; i < CURR_PROC->num_vmas; i++) {
         vma_t vma = CURR_PROC->vma_list[i];
         if (vpage >= vma.start_page && vpage <= vma.end_page) {
             pte->is_assigned_to_vma = true;
@@ -398,17 +439,46 @@ bool check_validity_and_cache_details(int vpage) {
 }
 
 /**
+ * Unmap the victim frame from its previous vpage association
+ */
+void unmap_victim_frame(frame_t *victim) {
+    int old_vpage = victim->vpage;
+    int old_pid = victim->pid;
+
+    pte_t *old_pte = &(PROCS[old_pid]->page_table[old_vpage]);
+
+    old_pte->is_present = false;
+
+    // TODO: make unmap calculations
+
+    if (VERBOSE) printf(" UNMAP %d:%d\n", old_pid, old_vpage);
+    if (old_pte->is_modified) {
+        if (old_pte->is_file_mapped) {
+            if (VERBOSE) printf(" FOUT\n");
+        } else {
+            old_pte->is_paged_out = true;
+            if (VERBOSE)printf(" OUT\n");
+        }
+        old_pte->is_modified = false;
+    }
+
+    // ???
+    old_pte->is_present = false;
+}
+
+/**
  * Handle Load/Store Operations
  * @param op
  * @param vpage
  */
 void handle_load_store(char op, int vpage) {
     pte_t *pte = &(CURR_PROC->page_table[vpage]);
-    if(!pte->is_present) {
+    if (!pte->is_present) {
         // TODO: make it valid/present
         bool is_valid = check_validity_and_cache_details(vpage);
-        if(!is_valid) {
-            if(VERBOSE) printf(" SEGV\n");
+        if (!is_valid) {
+            if (VERBOSE)
+                printf(" SEGV\n");
 
             // TODO: handle segv calculations
 
@@ -417,18 +487,39 @@ void handle_load_store(char op, int vpage) {
 
         frame_t *new_frame = get_frame();
 
-        // TODO: handle old frame
-        pte->frame_num = new_frame->frame_id;
-    }
+        if (new_frame->is_victim) {
+            unmap_victim_frame(new_frame);
+        }
 
-    //
+        if(pte->is_paged_out) {
+            if(VERBOSE) {
+                pte->is_file_mapped ? printf(" FIN\n") : printf(" IN\n");
+            }
+        } else {
+            if(VERBOSE) printf(" ZERO\n");
+        }
+
+        // assign new pte details to new frame
+        new_frame->is_victim = true;
+        new_frame->pid = CURR_PROC->get_pid();
+        new_frame->vpage = vpage;
+        new_frame->is_assigned = true;
+
+
+        // assign new frame details to new pte
+        pte->is_present = true;
+        pte->frame_num = new_frame->frame_id;
+
+        if(VERBOSE) printf(" MAP %d\n", pte->frame_num);
+    }
 
     pte->is_referenced = 1;
     // TODO: make reference calculations
 
-    if(op == 'w') {
-        if (pte->is_write_protected){
-            if(VERBOSE) printf(" SEGPROT\n");
+    if (op == 'w') {
+        if (pte->is_write_protected) {
+            if (VERBOSE)
+                printf(" SEGPROT\n");
 
             // TODO: make segprot calculations
         } else {
@@ -444,7 +535,7 @@ void run_simulation() {
     char op = 0;
     int target = 0;
     while (get_next_instruction(op, target)) {
-        if(VERBOSE) {
+        if (VERBOSE) {
             printf("%d: ==> %c %d\n", INS_COUNTER, op, target);
         }
         INS_COUNTER++;
@@ -540,6 +631,7 @@ int main(int argc, char **argv) {
         parse_randoms(argv[optind + 1]);
     }
     load_input(argv[optind]);
+    initialize_frames();
     run_simulation();
     print_output();
     garbage_collection();

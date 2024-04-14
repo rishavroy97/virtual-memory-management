@@ -491,12 +491,12 @@ void handle_load_store(char op, int vpage) {
             unmap_victim_frame(new_frame);
         }
 
-        if(pte->is_paged_out) {
-            if(VERBOSE) {
-                pte->is_file_mapped ? printf(" FIN\n") : printf(" IN\n");
-            }
+        if (pte->is_file_mapped) {
+            if (VERBOSE) printf(" FIN\n");
+        } else if (pte->is_paged_out) {
+            if (VERBOSE) printf(" IN\n");
         } else {
-            if(VERBOSE) printf(" ZERO\n");
+            if (VERBOSE) printf(" ZERO\n");
         }
 
         // assign new pte details to new frame
@@ -510,7 +510,7 @@ void handle_load_store(char op, int vpage) {
         pte->is_present = true;
         pte->frame_num = new_frame->frame_id;
 
-        if(VERBOSE) printf(" MAP %d\n", pte->frame_num);
+        if (VERBOSE) printf(" MAP %d\n", pte->frame_num);
     }
 
     pte->is_referenced = 1;
@@ -518,8 +518,7 @@ void handle_load_store(char op, int vpage) {
 
     if (op == 'w') {
         if (pte->is_write_protected) {
-            if (VERBOSE)
-                printf(" SEGPROT\n");
+            if (VERBOSE) printf(" SEGPROT\n");
 
             // TODO: make segprot calculations
         } else {

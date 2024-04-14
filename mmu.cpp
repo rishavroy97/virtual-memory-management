@@ -7,6 +7,7 @@
 #define MAX_FRAMES 128
 #define MAX_VPAGES 64
 #define NRU_RESET_COUNT 48
+#define WORKING_SET_TAU 49
 
 #define CTX_SWITCH_TIME 130
 #define LD_ST_TIME 1
@@ -151,6 +152,8 @@ class Pager {
 public:
     virtual frame_t *select_victim_frame() = 0;
 
+    virtual void reset_age(unsigned int frame_id) = 0;
+
     virtual ~Pager() = default;
 };
 
@@ -161,6 +164,8 @@ public:
     FCFSPager() {
         curr_idx = 0;
     }
+
+    void reset_age(unsigned int frame_id) override {}
 
     frame_t *select_victim_frame() override {
         frame_t *victim = &FRAME_TABLE[curr_idx];
@@ -176,6 +181,8 @@ public:
         int index = get_random();
         return &FRAME_TABLE[index];
     }
+
+    void reset_age(unsigned int frame_id) override {}
 };
 
 class ClockPager : public Pager {
@@ -203,6 +210,8 @@ public:
         clock_idx = (clock_idx + 1) % NUM_FRAMES;
         return victim;
     }
+
+    void reset_age(unsigned int frame_id) override {}
 };
 
 class NRUPager : public Pager {
@@ -212,7 +221,7 @@ private:
     int hand;
 
 public:
-    explicit NRUPager(int t) : hand(0), last_reset(0), reset_cycle(t) {}
+    NRUPager() : hand(0), last_reset(0), reset_cycle(NRU_RESET_COUNT) {}
 
     static int get_class_index(pte_t *pte) {
         int r = pte->is_referenced;
@@ -272,6 +281,8 @@ public:
         }
         return victim;
     }
+
+    void reset_age(unsigned int frame_id) override {}
 };
 
 class AgingPager : public Pager {
@@ -298,24 +309,84 @@ public:
                 // reset R bit
                 pte->is_referenced = false;
             }
-            if (FRAME_TABLE[min_age_idx].age < frame->age) {
-                min_age_idx = idx;
-            }
+            min_age_idx = FRAME_TABLE[idx].age < FRAME_TABLE[min_age_idx].age ? idx : min_age_idx;
         }
 
-        // if (SHOW_AGING_INFO) printf("");
+        if (SHOW_AGING_INFO) {
+            int end_idx = (start_idx + NUM_FRAMES - 1) % NUM_FRAMES;
+            printf("ASELECT %d-%d |", start_idx, end_idx);
+
+            for (int i = 0; i < NUM_FRAMES; i++) {
+                int idx = (start_idx + i) % NUM_FRAMES;
+                frame_t *frame = &FRAME_TABLE[idx];
+                printf(" %d:%x", idx, frame->age);
+            }
+
+            printf(" | %d\n", min_age_idx);
+        }
 
         frame_t *victim = &FRAME_TABLE[min_age_idx];
         hand = (min_age_idx + 1) % NUM_FRAMES;
         return victim;
     }
+
+    void reset_age(unsigned int frame_id) override {
+        frame_t *frame = &FRAME_TABLE[frame_id];
+        frame->age = 0;
+    }
 };
 
 class WorkingSetPager : public Pager {
 private:
+    int hand;
+    int tau;
 public:
+    WorkingSetPager() : hand(0), tau(WORKING_SET_TAU) {}
+
     frame_t *select_victim_frame() override {
-        return &FRAME_TABLE[0];
+        int start_idx = hand;
+        int oldest_idx = hand;
+
+        if (SHOW_AGING_INFO) {
+            int end_idx = (start_idx + NUM_FRAMES - 1) % NUM_FRAMES;
+            printf("ASELECT %d-%d |", start_idx, end_idx);
+        }
+
+        for (int i = 0; i < NUM_FRAMES; i++) {
+            int idx = (hand + i) % NUM_FRAMES;
+
+            pte_t *pte = reverse_map(idx);
+            frame_t *frame = &FRAME_TABLE[idx];
+
+            if (SHOW_AGING_INFO) {
+                printf(" %d(%d %d:%d %lu)", idx, pte->is_referenced, frame->pid, frame->vpage, frame->age);
+            }
+
+            bool is_old = INS_COUNTER > (frame->age + tau);
+            if (is_old && !pte->is_referenced) {
+                oldest_idx = idx;
+                break;
+            }
+
+            if (pte->is_referenced) {
+                frame->age = INS_COUNTER;
+                pte->is_referenced = false;
+            }
+
+            oldest_idx = FRAME_TABLE[idx].age < FRAME_TABLE[oldest_idx].age ? idx : oldest_idx;
+        }
+
+        if (SHOW_AGING_INFO) {
+            printf("| %d\n", oldest_idx);
+        }
+
+        hand = (oldest_idx + 1) % NUM_FRAMES;
+        return &FRAME_TABLE[oldest_idx];
+    }
+
+    void reset_age(unsigned int frame_id) override {
+        frame_t *frame = &FRAME_TABLE[frame_id];
+        frame->age = INS_COUNTER;
     }
 };
 
@@ -379,7 +450,7 @@ Pager *getPager(char *args) {
         case 'c':
             return new ClockPager();
         case 'e':
-            return new NRUPager(NRU_RESET_COUNT);
+            return new NRUPager();
         case 'a':
             return new AgingPager();
         case 'w':
@@ -716,6 +787,7 @@ void handle_load_store(char op, int vpage) {
         if (VERBOSE) printf(" MAP %d\n", pte->frame_num);
         CURR_PROC->maps++;
         COST += MAPS_TIME;
+        PAGER->reset_age(pte->frame_num);
     }
 
     pte->is_referenced = 1;

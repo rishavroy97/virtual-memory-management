@@ -7,6 +7,19 @@
 #define MAX_FRAMES 128
 #define MAX_VPAGES 64
 
+#define CTX_SWITCH_TIME 130
+#define LD_ST_TIME 1
+#define PROC_EXIT_TIME 1230
+#define MAPS_TIME 350
+#define UNMAPS_TIME 410
+#define INS_TIME 3200
+#define OUTS_TIME 2750
+#define FINS_TIME 2350
+#define FOUTS_TIME 2800
+#define ZEROS_TIME 150
+#define SEGV_TIME 440
+#define SEGPROT_TIME 410
+
 using namespace std;
 
 typedef struct frame_t {
@@ -63,10 +76,21 @@ public:
     vector<vma_t> vma_list;
     pte_t page_table[MAX_VPAGES]{0};
 
+    unsigned long long unmaps;
+    unsigned long long maps;
+    unsigned long long ins;
+    unsigned long long outs;
+    unsigned long long fins;
+    unsigned long long fouts;
+    unsigned long long zeros;
+    unsigned long long segv;
+    unsigned long long segprot;
+
     Process() {
         pid = Process::process_count;
         Process::process_count++;
         num_vmas = 0;
+        unmaps = maps = ins = outs = fins = fouts = zeros = segv = segprot = 0;
     }
 
     [[nodiscard]] int get_pid() const {
@@ -108,7 +132,11 @@ Pager *PAGER = nullptr;          // pager instance used in the simulation
 vector<Process *> PROCS;         // initialize a list of processes
 Process *CURR_PROC = nullptr;    // pointer to the current running process
 deque<ins_t> INSTRUCTIONS;       // list of instructions
-int INS_COUNTER = 0;             // instruction counter
+
+unsigned long long int INS_COUNTER = 0;     // instruction counter
+unsigned long long int CTX_SWITCHES = 0;    // total context switches
+unsigned long long int PROC_EXITS = 0;      // total process exits
+unsigned long long int COST = 0;            // total cost
 
 /**
  * List of option flags
@@ -117,15 +145,14 @@ bool VERBOSE = false;
 bool SHOW_PAGE_TABLE = false;
 bool SHOW_FRAME_TABLE = false;
 bool SHOW_STATS = false;
-bool SHOW_CURR_PT = false;
-bool SHOW_PROCESS_PT = false;
-bool SHOW_CURR_FT = false;
-bool SHOW_AGING_INFO = false;
+[[maybe_unused]] bool SHOW_CURR_PT = false;
+[[maybe_unused]] bool SHOW_PROCESS_PT = false;
+[[maybe_unused]] bool SHOW_CURR_FT = false;
+[[maybe_unused]] bool SHOW_AGING_INFO = false;
 
 /**
  * Helper functions
  */
-
 
 /**
  * Initialize frames for the FRAME_TABLE
@@ -410,7 +437,8 @@ bool get_next_instruction(char &opcode, int &target) {
 void handle_context_switch(int target) {
     CURR_PROC = PROCS[target];
 
-    // TODO: calculate context switch time
+    CTX_SWITCHES++;
+    COST += CTX_SWITCH_TIME;
 }
 
 /**
@@ -449,20 +477,24 @@ void unmap_victim_frame(frame_t *victim) {
 
     old_pte->is_present = false;
 
-    // TODO: make unmap calculations
-
     if (VERBOSE) printf(" UNMAP %d:%d\n", old_pid, old_vpage);
+    CURR_PROC->unmaps++;
+    COST += UNMAPS_TIME;
+
     if (old_pte->is_modified) {
         if (old_pte->is_file_mapped) {
             if (VERBOSE) printf(" FOUT\n");
+            CURR_PROC->fouts++;
+            COST += FOUTS_TIME;
         } else {
             old_pte->is_paged_out = true;
             if (VERBOSE)printf(" OUT\n");
+            CURR_PROC->outs++;
+            COST += OUTS_TIME;
         }
         old_pte->is_modified = false;
     }
 
-    // ???
     old_pte->is_present = false;
 }
 
@@ -472,16 +504,18 @@ void unmap_victim_frame(frame_t *victim) {
  * @param vpage
  */
 void handle_load_store(char op, int vpage) {
+
+    COST += LD_ST_TIME;
+
     pte_t *pte = &(CURR_PROC->page_table[vpage]);
     if (!pte->is_present) {
-        // TODO: make it valid/present
         bool is_valid = check_validity_and_cache_details(vpage);
         if (!is_valid) {
             if (VERBOSE)
                 printf(" SEGV\n");
 
-            // TODO: handle segv calculations
-
+            CURR_PROC->segv++;
+            COST += SEGV_TIME;
             return;
         }
 
@@ -493,10 +527,16 @@ void handle_load_store(char op, int vpage) {
 
         if (pte->is_file_mapped) {
             if (VERBOSE) printf(" FIN\n");
+            CURR_PROC->fins++;
+            COST += FINS_TIME;
         } else if (pte->is_paged_out) {
             if (VERBOSE) printf(" IN\n");
+            CURR_PROC->ins++;
+            COST += INS_TIME;
         } else {
             if (VERBOSE) printf(" ZERO\n");
+            CURR_PROC->zeros++;
+            COST += ZEROS_TIME;
         }
 
         // assign new pte details to new frame
@@ -511,16 +551,17 @@ void handle_load_store(char op, int vpage) {
         pte->frame_num = new_frame->frame_id;
 
         if (VERBOSE) printf(" MAP %d\n", pte->frame_num);
+        CURR_PROC->maps++;
+        COST += MAPS_TIME;
     }
 
     pte->is_referenced = 1;
-    // TODO: make reference calculations
 
     if (op == 'w') {
         if (pte->is_write_protected) {
             if (VERBOSE) printf(" SEGPROT\n");
-
-            // TODO: make segprot calculations
+            CURR_PROC->segprot++;
+            COST += SEGPROT_TIME;
         } else {
             pte->is_modified = 1;
         }
@@ -611,6 +652,24 @@ void print_frame_table() {
 }
 
 /**
+ * Print the per process stats
+ */
+void print_per_process_stats() {
+    for (Process *proc: PROCS) {
+        printf("PROC[%d]: U=%llu M=%llu I=%llu O=%llu FI=%llu FO=%llu Z=%llu SV=%llu SP=%llu\n",
+               proc->get_pid(),
+               proc->unmaps, proc->maps, proc->ins, proc->outs,
+               proc->fins, proc->fouts, proc->zeros,
+               proc->segv, proc->segprot);
+    }
+}
+
+void print_global_stats() {
+    printf("TOTALCOST %llu %llu %llu %llu %llu\n",
+           INS_COUNTER, CTX_SWITCHES, PROC_EXITS, COST, sizeof(pte_t));
+}
+
+/**
  * Print the final desired output based on global flags
  */
 void print_output() {
@@ -618,6 +677,10 @@ void print_output() {
         print_page_tables();
     if (SHOW_FRAME_TABLE)
         print_frame_table();
+    if (SHOW_STATS) {
+        print_per_process_stats();
+        print_global_stats();
+    }
 }
 
 void garbage_collection() {

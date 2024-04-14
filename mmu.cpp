@@ -24,13 +24,14 @@
 using namespace std;
 
 typedef struct frame_t {
-    frame_t() : is_assigned(false), pid(-1), vpage(-1), frame_id(-1), is_victim(false) {}
+    frame_t() : is_assigned(false), pid(-1), vpage(-1), frame_id(-1), is_victim(false), age(0) {}
 
     bool is_assigned;
     int pid;
     int vpage;
     int frame_id;
     bool is_victim;
+    unsigned long int age;
 } frame_t;
 
 typedef struct {
@@ -210,10 +211,6 @@ private:
     unsigned long long int last_reset;
     int hand;
 
-    [[nodiscard]] bool is_time_to_reset() const {
-        return INS_COUNTER >= last_reset + reset_cycle;
-    }
-
 public:
     explicit NRUPager(int t) : hand(0), last_reset(0), reset_cycle(t) {}
 
@@ -228,7 +225,7 @@ public:
 
         // variables for ASELECT
         int start = hand;
-        int reset = is_time_to_reset();
+        bool reset = INS_COUNTER >= (last_reset + reset_cycle);
         int lowest_class_found = -1;
         int victim_frame_id = -1;
         int scan_count = 0;
@@ -259,19 +256,66 @@ public:
                 if (class_frame_map[i] != -1) {
                     victim_frame_id = class_frame_map[i];
                     lowest_class_found = i;
+                    break;
                 }
             }
         }
 
         frame_t *victim = &FRAME_TABLE[victim_frame_id];
         if (SHOW_AGING_INFO) {
-            printf("%d %d | %d %d %d\n", start, reset, lowest_class_found, victim_frame_id, scan_count);
+            printf("ASELECT: hand=%2d %d | %d %2d %2d\n", start, reset, lowest_class_found, victim_frame_id,
+                   scan_count);
         }
-        hand = (hand + 1) % NUM_FRAMES;
+        hand = (victim_frame_id + 1) % NUM_FRAMES;
         if (reset) {
             last_reset = INS_COUNTER;
         }
         return victim;
+    }
+};
+
+class AgingPager : public Pager {
+private:
+    int hand;
+public:
+    AgingPager() : hand(0) {}
+
+    frame_t *select_victim_frame() override {
+        int start_idx = hand;
+        int min_age_idx = hand;
+
+        for (int i = 0; i < NUM_FRAMES; i++) {
+            int idx = (hand + i) % NUM_FRAMES;
+
+            pte_t *pte = reverse_map(idx);
+            frame_t *frame = &FRAME_TABLE[idx];
+
+            // shift right by 1 (divide by 2)
+            frame->age >>= 1;
+            if (pte->is_referenced) {
+                // add the reference bit to left of age
+                frame->age |= 0x80000000;
+                // reset R bit
+                pte->is_referenced = false;
+            }
+            if (FRAME_TABLE[min_age_idx].age < frame->age) {
+                min_age_idx = idx;
+            }
+        }
+
+        // if (SHOW_AGING_INFO) printf("");
+
+        frame_t *victim = &FRAME_TABLE[min_age_idx];
+        hand = (min_age_idx + 1) % NUM_FRAMES;
+        return victim;
+    }
+};
+
+class WorkingSetPager : public Pager {
+private:
+public:
+    frame_t *select_victim_frame() override {
+        return &FRAME_TABLE[0];
     }
 };
 
@@ -337,9 +381,9 @@ Pager *getPager(char *args) {
         case 'e':
             return new NRUPager(NRU_RESET_COUNT);
         case 'a':
-            return new FCFSPager();
+            return new AgingPager();
         case 'w':
-            return new FCFSPager();
+            return new WorkingSetPager();
         default:
             printf("Unknown Replacement Algorithm: %c\n", args[0]);
             exit(1);

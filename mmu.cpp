@@ -478,18 +478,18 @@ void unmap_victim_frame(frame_t *victim) {
     old_pte->is_present = false;
 
     if (VERBOSE) printf(" UNMAP %d:%d\n", old_pid, old_vpage);
-    CURR_PROC->unmaps++;
+    PROCS[old_pid]->unmaps++;
     COST += UNMAPS_TIME;
 
     if (old_pte->is_modified) {
         if (old_pte->is_file_mapped) {
             if (VERBOSE) printf(" FOUT\n");
-            CURR_PROC->fouts++;
+            PROCS[old_pid]->fouts++;
             COST += FOUTS_TIME;
         } else {
             old_pte->is_paged_out = true;
             if (VERBOSE)printf(" OUT\n");
-            CURR_PROC->outs++;
+            PROCS[old_pid]->outs++;
             COST += OUTS_TIME;
         }
         old_pte->is_modified = false;

@@ -587,9 +587,18 @@ void print_page_tables() {
                 printf("%d:", i);
                 entry.is_referenced ? printf("R") : printf("-");
                 entry.is_modified ? printf("M") : printf("-");
-                entry.is_paged_out ? printf("S ") : printf("- ");
+                if (i == MAX_VPAGES - 1) {
+                    // last entry
+                    entry.is_paged_out ? printf("S") : printf("-");
+                } else {
+                    entry.is_paged_out ? printf("S ") : printf("- ");
+                }
             } else {
-                entry.is_paged_out ? printf("# ") : printf("* ");
+                if (i == MAX_VPAGES - 1) {
+                    entry.is_paged_out ? printf("#") : printf("*");
+                } else {
+                    entry.is_paged_out ? printf("# ") : printf("* ");
+                }
             }
         }
         printf("\n");

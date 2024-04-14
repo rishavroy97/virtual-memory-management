@@ -587,19 +587,11 @@ void print_page_tables() {
                 printf("%d:", i);
                 entry.is_referenced ? printf("R") : printf("-");
                 entry.is_modified ? printf("M") : printf("-");
-                if (i == MAX_VPAGES - 1) {
-                    // last entry
-                    entry.is_paged_out ? printf("S") : printf("-");
-                } else {
-                    entry.is_paged_out ? printf("S ") : printf("- ");
-                }
+                entry.is_paged_out ? printf("S") : printf("-");
             } else {
-                if (i == MAX_VPAGES - 1) {
-                    entry.is_paged_out ? printf("#") : printf("*");
-                } else {
-                    entry.is_paged_out ? printf("# ") : printf("* ");
-                }
+                entry.is_paged_out ? printf("#") : printf("*");
             }
+            if (i != MAX_VPAGES - 1) printf(" ");
         }
         printf("\n");
     }
@@ -612,7 +604,8 @@ void print_frame_table() {
     printf("FT: ");
     for (int i = 0; i < NUM_FRAMES; i++) {
         frame_t *frame = &FRAME_TABLE[i];
-        frame->is_assigned ? printf("%d:%d ", frame->pid, frame->vpage) : printf("* ");
+        frame->is_assigned ? printf("%d:%d", frame->pid, frame->vpage) : printf("*");
+        if (i != NUM_FRAMES - 1) printf(" ");
     }
     printf("\n");
 }

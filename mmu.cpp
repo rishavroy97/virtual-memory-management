@@ -61,7 +61,6 @@ typedef struct {
  * Global variables part 1
  */
 frame_t FRAME_TABLE[MAX_FRAMES]; // global frame table to keep track of all the frames in the physical memory
-pte_t PAGE_TABLE[MAX_VPAGES];    // page table of the current process
 deque<frame_t *> FREE_FRAMES;     // list of free frames
 int NUM_FRAMES = 0;              // total number of frames in the frame_table
 int NUM_PROCS = 0;               // total number of processes
@@ -605,9 +604,8 @@ void handle_process_exit(int target) {
                 PROCS[pid]->fouts++;
                 COST += FOUTS_TIME;
             }
-            // ???
-            pte->is_present = pte->is_referenced = pte->is_paged_out = 0;
         }
+        pte->is_present = pte->is_referenced = pte->is_paged_out = 0;
     }
 }
 

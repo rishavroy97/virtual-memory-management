@@ -319,7 +319,7 @@ public:
             for (int i = 0; i < NUM_FRAMES; i++) {
                 int idx = (start_idx + i) % NUM_FRAMES;
                 frame_t *frame = &FRAME_TABLE[idx];
-                printf(" %d:%x", idx, frame->age);
+                printf(" %d:%lx", idx, frame->age);
             }
 
             printf(" | %d\n", min_age_idx);
@@ -352,18 +352,21 @@ public:
             printf("ASELECT %d-%d |", start_idx, end_idx);
         }
 
+        int count = 0;
         for (int i = 0; i < NUM_FRAMES; i++) {
+            count++;
             int idx = (hand + i) % NUM_FRAMES;
 
             pte_t *pte = reverse_map(idx);
             frame_t *frame = &FRAME_TABLE[idx];
 
             if (SHOW_AGING_INFO) {
-                printf(" %d(%d %d:%d %lu)", idx, pte->is_referenced, frame->pid, frame->vpage, frame->age);
+                printf(" %d(%d %d:%d %lu)", idx, pte->is_referenced, frame->pid, frame->vpage, frame->age - 1);
             }
 
             bool is_old = INS_COUNTER > (frame->age + tau);
             if (is_old && !pte->is_referenced) {
+                if (SHOW_AGING_INFO) printf(" STOP(%d)", count);
                 oldest_idx = idx;
                 break;
             }
@@ -377,7 +380,7 @@ public:
         }
 
         if (SHOW_AGING_INFO) {
-            printf("| %d\n", oldest_idx);
+            printf(" | %d\n", oldest_idx);
         }
 
         hand = (oldest_idx + 1) % NUM_FRAMES;

@@ -61,9 +61,12 @@ typedef struct {
  * Global variables part 1
  */
 frame_t FRAME_TABLE[MAX_FRAMES]; // global frame table to keep track of all the frames in the physical memory
-deque<frame_t *> FREE_FRAMES;     // list of free frames
+deque<frame_t *> FREE_FRAMES;    // list of free frames
 int NUM_FRAMES = 0;              // total number of frames in the frame_table
 int NUM_PROCS = 0;               // total number of
+int RAND_COUNT = 0;              // total number of random numbers in file
+vector<int> RANDVALS;            // initialize a list of random numbers
+int OFS = 0;                     // line offset for the random file
 
 /**
  * List of option flags
@@ -124,6 +127,19 @@ pte_t *reverse_map(int id) {
     return &PROCS[pid]->page_table[vpage];
 }
 
+/**
+ * Get random number from randvals
+ * @param - burst - the corresponding CPU or IO burst
+ *
+ * @returns - random value in the range of 1,..,burst
+ */
+int get_random() {
+    int offset = OFS % RAND_COUNT;
+    int random = RANDVALS[offset] % NUM_FRAMES;
+    OFS++;
+    return random;
+}
+
 class Pager {
 public:
     virtual frame_t *select_victim_frame() = 0;
@@ -147,6 +163,14 @@ public:
     }
 };
 
+class RandomPager : public Pager {
+public:
+    frame_t *select_victim_frame() override {
+        int index = get_random();
+        return &FRAME_TABLE[index];
+    }
+};
+
 class ClockPager : public Pager {
 private:
     int clock_idx;
@@ -167,7 +191,7 @@ public:
             count++;
         }
 
-        if(SHOW_AGING_INFO) printf("ASELECT %d %d\n", start, count);
+        if (SHOW_AGING_INFO) printf("ASELECT %d %d\n", start, count);
         frame_t *victim = &FRAME_TABLE[clock_idx];
         clock_idx = (clock_idx + 1) % NUM_FRAMES;
         return victim;
@@ -177,9 +201,6 @@ public:
 /**
  * Global variables part 2
  */
-int RAND_COUNT = 0;              // total number of random numbers in file
-vector<int> RANDVALS;            // initialize a list of random numbers
-int OFS = 0;                     // line offset for the random file
 Pager *PAGER = nullptr;          // pager instance used in the simulation
 Process *CURR_PROC = nullptr;    // pointer to the current running process
 deque<ins_t> INSTRUCTIONS;       // list of instructions
@@ -228,19 +249,6 @@ frame_t *get_frame() {
 }
 
 /**
- * Get random number from randvals
- * @param - burst - the corresponding CPU or IO burst
- *
- * @returns - random value in the range of 1,..,burst
- */
-int get_random(int burst) {
-    int offset = OFS % RAND_COUNT;
-    int random = 1 + (RANDVALS[offset] % burst);
-    OFS++;
-    return random;
-}
-
-/**
  * Get the appropriate pager based on the arguments
  * @param - args - string that needs to parsed to fetch the pager type
  *
@@ -251,7 +259,7 @@ Pager *getPager(char *args) {
         case 'f':
             return new FCFSPager();
         case 'r':
-            return new FCFSPager();
+            return new RandomPager();
         case 'c':
             return new ClockPager();
         case 'e':

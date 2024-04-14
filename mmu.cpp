@@ -569,6 +569,49 @@ void handle_load_store(char op, int vpage) {
 }
 
 /**
+ * Handle Process Exit Operations
+ * @param target - process number
+ */
+void handle_process_exit(int target) {
+    printf("EXIT current process %d\n", target);
+    PROC_EXITS++;
+    COST += PROC_EXIT_TIME;
+
+    Process *active_process = PROCS[target];
+
+    for (int i = 0; i < MAX_VPAGES; i++) {
+        pte_t *pte = &(active_process->page_table[i]);
+        if (pte->is_present) {
+            frame_t *frame = &FRAME_TABLE[pte->frame_num];
+            int pid = frame->pid;
+            int vpage = frame->vpage;
+
+            // unmap this frame
+            if (VERBOSE) printf(" UNMAP %d:%d\n", pid, vpage);
+            PROCS[pid]->unmaps++;
+            COST += UNMAPS_TIME;
+
+            // free the frame
+            frame->is_assigned = false;
+            frame->pid = -1;
+            frame->vpage = -1;
+            frame->is_victim = false;
+
+            FREE_FRAMES.push_back(frame);
+
+            // clear out the page table entry as well
+            if (pte->is_modified && pte->is_file_mapped) {
+                if (VERBOSE) printf(" FOUT\n");
+                PROCS[pid]->fouts++;
+                COST += FOUTS_TIME;
+            }
+            // ???
+            pte->is_present = pte->is_referenced = pte->is_paged_out = 0;
+        }
+    }
+}
+
+/**
  * Start simulation
  */
 void run_simulation() {
@@ -588,7 +631,8 @@ void run_simulation() {
                 handle_load_store(op, target);
                 break;
             case 'e':
-                continue;
+                handle_process_exit(target);
+                break;
             default:
                 printf("Incorrect instruction operation <%c>\n", op);
                 exit(1);

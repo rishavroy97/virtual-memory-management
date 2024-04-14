@@ -112,6 +112,18 @@ public:
 int Process::process_count = 0; // initializing the static int - process_count
 vector<Process *> PROCS;        // initialize a list of processes
 
+/**
+ * Helper function to get the Page table entry given the frame_id
+ *
+ * @param id - frame id (can be used to access into the FRAME_TABLE)
+ * @return pte_t* - the corresponding page table entry
+ */
+pte_t *reverse_map(int id) {
+    int pid = FRAME_TABLE[id].pid;
+    int vpage = FRAME_TABLE[id].vpage;
+    return &PROCS[pid]->page_table[vpage];
+}
+
 class Pager {
 public:
     virtual frame_t *select_victim_frame() = 0;
@@ -144,18 +156,19 @@ public:
     }
 
     frame_t *select_victim_frame() override {
-        frame_t *clock_frame = &FRAME_TABLE[clock_idx];
-        Process *clock_process = PROCS[clock_frame->pid];
-        pte_t *clock_pte = &clock_process->page_table[clock_frame->vpage];
+        int start = clock_idx;
+        int count = 0;
+        pte_t *clock_pte = reverse_map(clock_idx);
+        count++;
         while (clock_pte->is_referenced) {
             clock_pte->is_referenced = false;
             clock_idx = (clock_idx + 1) % NUM_FRAMES;
-            clock_frame = &FRAME_TABLE[clock_idx];
-            clock_process = PROCS[clock_frame->pid];
-            clock_pte = &clock_process->page_table[clock_frame->vpage];
+            clock_pte = reverse_map(clock_idx);
+            count++;
         }
 
-        frame_t *victim = &FRAME_TABLE[clock_pte->frame_num];
+        if(SHOW_AGING_INFO) printf("ASELECT %d %d\n", start, count);
+        frame_t *victim = &FRAME_TABLE[clock_idx];
         return victim;
     }
 };

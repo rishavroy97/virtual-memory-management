@@ -6,6 +6,7 @@
 
 #define MAX_FRAMES 128
 #define MAX_VPAGES 64
+#define NRU_RESET_COUNT 48
 
 #define CTX_SWITCH_TIME 130
 #define LD_ST_TIME 1
@@ -79,6 +80,11 @@ bool SHOW_AGING_INFO = false;
 [[maybe_unused]] bool SHOW_CURR_PT = false;
 [[maybe_unused]] bool SHOW_PROCESS_PT = false;
 [[maybe_unused]] bool SHOW_CURR_FT = false;
+
+unsigned long long int INS_COUNTER = 0;     // instruction counter
+unsigned long long int CTX_SWITCHES = 0;    // total context switches
+unsigned long long int PROC_EXITS = 0;      // total process exits
+unsigned long long int COST = 0;            // total cost
 
 class Process {
 private:
@@ -198,17 +204,83 @@ public:
     }
 };
 
+class NRUPager : public Pager {
+private:
+    int reset_cycle;
+    unsigned long long int last_reset;
+    int hand;
+
+    [[nodiscard]] bool is_time_to_reset() const {
+        return INS_COUNTER >= last_reset + reset_cycle;
+    }
+
+public:
+    explicit NRUPager(int t) : hand(0), last_reset(0), reset_cycle(t) {}
+
+    static int get_class_index(pte_t *pte) {
+        int r = pte->is_referenced;
+        int m = pte->is_modified;
+        return 2 * r + m;
+    }
+
+    frame_t *select_victim_frame() override {
+        int class_frame_map[4] = {-1, -1, -1, -1};
+
+        // variables for ASELECT
+        int start = hand;
+        int reset = is_time_to_reset();
+        int lowest_class_found = -1;
+        int victim_frame_id = -1;
+        int scan_count = 0;
+
+        for (int i = 0; i < NUM_FRAMES; i++) {
+            scan_count++;
+            int idx = (hand + i) % NUM_FRAMES;
+            pte_t *pte = reverse_map(idx);
+            int page_type = get_class_index(pte);
+
+            if (class_frame_map[page_type] == -1) {
+                class_frame_map[page_type] = idx;
+            }
+
+            if (page_type == 0 && !reset) {
+                victim_frame_id = idx;
+                lowest_class_found = 0;
+                break;
+            }
+
+            if (reset) {
+                pte->is_referenced = false;
+            }
+        }
+
+        if (lowest_class_found == -1) {
+            for (int i = 0; i < 4; i++) {
+                if (class_frame_map[i] != -1) {
+                    victim_frame_id = class_frame_map[i];
+                    lowest_class_found = i;
+                }
+            }
+        }
+
+        frame_t *victim = &FRAME_TABLE[victim_frame_id];
+        if (SHOW_AGING_INFO) {
+            printf("%d %d | %d %d %d\n", start, reset, lowest_class_found, victim_frame_id, scan_count);
+        }
+        hand = (hand + 1) % NUM_FRAMES;
+        if (reset) {
+            last_reset = INS_COUNTER;
+        }
+        return victim;
+    }
+};
+
 /**
  * Global variables part 2
  */
 Pager *PAGER = nullptr;          // pager instance used in the simulation
 Process *CURR_PROC = nullptr;    // pointer to the current running process
 deque<ins_t> INSTRUCTIONS;       // list of instructions
-
-unsigned long long int INS_COUNTER = 0;     // instruction counter
-unsigned long long int CTX_SWITCHES = 0;    // total context switches
-unsigned long long int PROC_EXITS = 0;      // total process exits
-unsigned long long int COST = 0;            // total cost
 
 /**
  * Helper functions
@@ -263,7 +335,7 @@ Pager *getPager(char *args) {
         case 'c':
             return new ClockPager();
         case 'e':
-            return new FCFSPager();
+            return new NRUPager(NRU_RESET_COUNT);
         case 'a':
             return new FCFSPager();
         case 'w':

@@ -169,6 +169,7 @@ public:
 
         if(SHOW_AGING_INFO) printf("ASELECT %d %d\n", start, count);
         frame_t *victim = &FRAME_TABLE[clock_idx];
+        clock_idx = (clock_idx + 1) % NUM_FRAMES;
         return victim;
     }
 };

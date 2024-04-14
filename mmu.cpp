@@ -63,7 +63,19 @@ typedef struct {
 frame_t FRAME_TABLE[MAX_FRAMES]; // global frame table to keep track of all the frames in the physical memory
 deque<frame_t *> FREE_FRAMES;     // list of free frames
 int NUM_FRAMES = 0;              // total number of frames in the frame_table
-int NUM_PROCS = 0;               // total number of processes
+int NUM_PROCS = 0;               // total number of
+
+/**
+ * List of option flags
+ */
+bool VERBOSE = false;
+bool SHOW_PAGE_TABLE = false;
+bool SHOW_FRAME_TABLE = false;
+bool SHOW_STATS = false;
+bool SHOW_AGING_INFO = false;
+[[maybe_unused]] bool SHOW_CURR_PT = false;
+[[maybe_unused]] bool SHOW_PROCESS_PT = false;
+[[maybe_unused]] bool SHOW_CURR_FT = false;
 
 class Process {
 private:
@@ -117,6 +129,7 @@ public:
 
     frame_t *select_victim_frame() override {
         frame_t *victim = &FRAME_TABLE[curr_idx];
+        if (SHOW_AGING_INFO) printf("ASELECT %d\n", curr_idx);
         curr_idx = (curr_idx + 1) % NUM_FRAMES;
         return victim;
     }
@@ -131,16 +144,18 @@ public:
     }
 
     frame_t *select_victim_frame() override {
-        frame_t *victim = &FRAME_TABLE[clock_idx];
-        Process *victim_proc = PROCS[victim->pid];
-        pte_t *victim_pte = &victim_proc->page_table[victim->vpage];
-        while (victim_pte->is_referenced) {
-            victim_pte->is_referenced = false;
+        frame_t *clock_frame = &FRAME_TABLE[clock_idx];
+        Process *clock_process = PROCS[clock_frame->pid];
+        pte_t *clock_pte = &clock_process->page_table[clock_frame->vpage];
+        while (clock_pte->is_referenced) {
+            clock_pte->is_referenced = false;
             clock_idx = (clock_idx + 1) % NUM_FRAMES;
-            victim = &FRAME_TABLE[clock_idx];
-            victim_proc = PROCS[victim->pid];
-            victim_pte = &victim_proc->page_table[victim->vpage];
+            clock_frame = &FRAME_TABLE[clock_idx];
+            clock_process = PROCS[clock_frame->pid];
+            clock_pte = &clock_process->page_table[clock_frame->vpage];
         }
+
+        frame_t *victim = &FRAME_TABLE[clock_pte->frame_num];
         return victim;
     }
 };
@@ -159,18 +174,6 @@ unsigned long long int INS_COUNTER = 0;     // instruction counter
 unsigned long long int CTX_SWITCHES = 0;    // total context switches
 unsigned long long int PROC_EXITS = 0;      // total process exits
 unsigned long long int COST = 0;            // total cost
-
-/**
- * List of option flags
- */
-bool VERBOSE = false;
-bool SHOW_PAGE_TABLE = false;
-bool SHOW_FRAME_TABLE = false;
-bool SHOW_STATS = false;
-[[maybe_unused]] bool SHOW_CURR_PT = false;
-[[maybe_unused]] bool SHOW_PROCESS_PT = false;
-[[maybe_unused]] bool SHOW_CURR_FT = false;
-[[maybe_unused]] bool SHOW_AGING_INFO = false;
 
 /**
  * Helper functions

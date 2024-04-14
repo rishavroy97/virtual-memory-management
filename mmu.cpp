@@ -584,6 +584,7 @@ void print_page_tables() {
         for (int i = 0; i < MAX_VPAGES; i++) {
             pte_t entry = p->page_table[i];
             if (entry.is_present) {
+                printf("%d:", i);
                 entry.is_referenced ? printf("R") : printf("-");
                 entry.is_modified ? printf("M") : printf("-");
                 entry.is_paged_out ? printf("S ") : printf("- ");

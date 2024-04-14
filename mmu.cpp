@@ -98,6 +98,7 @@ public:
 };
 
 int Process::process_count = 0; // initializing the static int - process_count
+vector<Process *> PROCS;        // initialize a list of processes
 
 class Pager {
 public:
@@ -121,6 +122,29 @@ public:
     }
 };
 
+class ClockPager : public Pager {
+private:
+    int clock_idx;
+public:
+    ClockPager() {
+        clock_idx = 0;
+    }
+
+    frame_t *select_victim_frame() override {
+        frame_t *victim = &FRAME_TABLE[clock_idx];
+        Process *victim_proc = PROCS[victim->pid];
+        pte_t *victim_pte = &victim_proc->page_table[victim->vpage];
+        while (victim_pte->is_referenced) {
+            victim_pte->is_referenced = false;
+            clock_idx = (clock_idx + 1) % NUM_FRAMES;
+            victim = &FRAME_TABLE[clock_idx];
+            victim_proc = PROCS[victim->pid];
+            victim_pte = &victim_proc->page_table[victim->vpage];
+        }
+        return victim;
+    }
+};
+
 /**
  * Global variables part 2
  */
@@ -128,7 +152,6 @@ int RAND_COUNT = 0;              // total number of random numbers in file
 vector<int> RANDVALS;            // initialize a list of random numbers
 int OFS = 0;                     // line offset for the random file
 Pager *PAGER = nullptr;          // pager instance used in the simulation
-vector<Process *> PROCS;         // initialize a list of processes
 Process *CURR_PROC = nullptr;    // pointer to the current running process
 deque<ins_t> INSTRUCTIONS;       // list of instructions
 
@@ -213,7 +236,7 @@ Pager *getPager(char *args) {
         case 'r':
             return new FCFSPager();
         case 'c':
-            return new FCFSPager();
+            return new ClockPager();
         case 'e':
             return new FCFSPager();
         case 'a':
